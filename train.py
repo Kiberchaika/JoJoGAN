@@ -71,7 +71,11 @@ else:
 #path_to_dataset = 'dataset/charcoal_tiny_aligned/1' 
 #path_to_dataset = 'dataset/metfaces_small'
 #path_to_dataset = 'dataset/mexican'
-path_to_dataset = 'dataset/bust'
+#path_to_dataset = 'dataset/bust'
+
+path_to_dataset = 'dataset/rough pencil sketch portrait'
+is_aligned = False
+#is_aligned = True
 
 names = []
 for path in sorted(glob.glob(os.path.join(path_to_dataset, '*.*'))):
@@ -89,16 +93,19 @@ for name in names:
     name = strip_path_extension(name)
 
     # crop and align the face
-    style_aligned_path = os.path.join('style_images_aligned', f'{name}.png')
-    if not os.path.exists(style_aligned_path):
-        try:
-            style_aligned = align_face(style_path)
-        except:
-            print("no face!!! " , name)
-            continue
-        style_aligned.save(style_aligned_path)
+    if is_aligned:
+        style_aligned = Image.open(style_path).convert('RGB')
     else:
-        style_aligned = Image.open(style_aligned_path).convert('RGB')
+        style_aligned_path = os.path.join('style_images_aligned', f'{name}.png')
+        if not os.path.exists(style_aligned_path):
+            try:
+                style_aligned = align_face(style_path)
+            except:
+                print("no face!!! " , name)
+                continue
+            style_aligned.save(style_aligned_path)
+        else:
+            style_aligned = Image.open(style_aligned_path).convert('RGB')
 
     # GAN invert
     style_code_path = os.path.join(path_to_inv, f'{name}.pt')
@@ -180,6 +187,9 @@ for idx in tqdm(range(num_iter)):
         _alpha = np.linspace(0.1, 0.0, len(id_swap), endpoint=True)[c]
         in_latent[:, [j]] = _alpha*latents[:, [j]] + (1-_alpha)*mean_w[:, [j]]
 
+
+    in_latent[:, [15,16,17]] = latents[:, [15,16,17]] 
+
     # оригинальная логика смешивания       
     #in_latent[:, id_swap] = alpha*latents[:, id_swap] + (1-alpha)*mean_w[:, id_swap]
 
@@ -190,7 +200,7 @@ for idx in tqdm(range(num_iter)):
 
     # todo: брать семплы последовательно 
     # get only N random samples
-    n = 2
+    n = 5
     if in_latent.size(0) > n:
         perm = []
         for j in range(0, n):
@@ -225,8 +235,8 @@ for idx in tqdm(range(num_iter)):
         for y in range(0,1024,256):
             img1 = F.interpolate(torchvision.transforms.functional.crop(img,x,y,lpips_size,lpips_size), size=(lpips_size,lpips_size), mode='area')
             img2 = F.interpolate(torchvision.transforms.functional.crop(_targets,x,y,lpips_size,lpips_size), size=(lpips_size,lpips_size), mode='area')
-            loss = loss + 0.01 * caluclate_contentloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
-            loss = loss - 0.01 * caluclate_styleloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
+            loss = loss + 0.08 * caluclate_contentloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
+            loss = loss - 0.08 * caluclate_styleloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
 
     for g in g_optim.param_groups:
         if idx < 80:
