@@ -19,6 +19,8 @@ from e4e_projection import Helper
 
 from copy import deepcopy
 
+from vgg_helper import caluclate_styleloss, caluclate_contentloss
+
 os.makedirs('inversion_codes', exist_ok=True)
 os.makedirs('style_images', exist_ok=True)
 os.makedirs('style_images_aligned', exist_ok=True)
@@ -47,7 +49,7 @@ transform = transforms.Compose(
 #@title Choose input face
 #@markdown Add your own image to the test_input directory and put the name here
 filename = 'myimg.png' #@param {type:"string"}
-filepath = f'bust/{filename}'
+filepath = f'test_input/{filename}'
 
 # uploaded = files.upload()
 # filepath = list(uploaded.keys())[0]
@@ -66,7 +68,10 @@ else:
 
 #display_image(aligned_face, title='Aligned face')
 
-path_to_dataset = 'dataset/charcoal_tiny_aligned/1/'
+#path_to_dataset = 'dataset/charcoal_tiny_aligned/1' 
+#path_to_dataset = 'dataset/metfaces_small'
+#path_to_dataset = 'dataset/mexican'
+path_to_dataset = 'dataset/bust'
 
 names = []
 for path in sorted(glob.glob(os.path.join(path_to_dataset, '*.*'))):
@@ -74,6 +79,8 @@ for path in sorted(glob.glob(os.path.join(path_to_dataset, '*.*'))):
 
 targets = []
 latents = []
+
+path_to_inv = os.path.join('inversion_codes',os.path.basename(path_to_dataset))
 
 for name in names:
     style_path = os.path.join(path_to_dataset, name)
@@ -94,11 +101,22 @@ for name in names:
         style_aligned = Image.open(style_aligned_path).convert('RGB')
 
     # GAN invert
-    style_code_path = os.path.join('inversion_codes', f'{name}.pt')
+    style_code_path = os.path.join(path_to_inv, f'{name}.pt')
     print("add ", style_code_path)
+    
+    if not os.path.exists(path_to_inv):
+        os.mkdir(path_to_inv)
     
     if not os.path.exists(style_code_path):
         latent = e4e_helper.projection(style_aligned, style_code_path)
+
+        generator.eval()
+        my_sample = generator(latent.unsqueeze(0), input_is_latent=True)
+        generator.train()
+        my_sample = transforms.ToPILImage()(utils.make_grid(my_sample, normalize=True, range=(-1, 1)))
+        my_sample.save(os.path.join(path_to_inv, f'{name}.jpg'))
+
+        style_aligned.save(os.path.join(path_to_inv, f'{name}_orig.jpg'))
     else:
         latent = torch.load(style_code_path)['latent']
 
@@ -119,7 +137,7 @@ alpha = 1-alpha
 #@markdown Tries to preserve color of original image by limiting family of allowable transformations. Set to false if you want to transfer color from reference image. This also leads to heavier stylization
 preserve_color = False #@param{type:"boolean"}
 #@markdown Number of finetuning steps. Different style reference may require different iterations. Try 200~500 iterations.
-num_iter = 600 #@param {type:"number"}
+num_iter = 450 #@param {type:"number"}
 #@markdown Log training on wandb and interval for image logging
 log_interval = 50 #@param {type:"number"}
 
@@ -130,7 +148,7 @@ lpips_fn = lpips.LPIPS(net='vgg').to(device)
 del generator
 generator = deepcopy(original_generator)
 
-g_optim = optim.Adam(generator.parameters(), lr=2e-4, betas=(0, 0.99))
+g_optim = optim.Adam(generator.parameters(), lr=2e-3, betas=(0, 0.99))
 
 # Which layers to swap for generating a family of plausible real images -> fake image
 if preserve_color:
@@ -138,9 +156,10 @@ if preserve_color:
 else:
     id_swap = list(range(7, generator.n_latent))
 
-#i = 0
-targets = targets.repeat(3,1,1,1) 
-latents = latents.repeat(3,1,1) 
+_c = 0
+repeat = 1
+targets = targets.repeat(repeat,1,1,1) 
+latents = latents.repeat(repeat,1,1) 
 
 for idx in tqdm(range(num_iter)):
     if preserve_color:
@@ -154,25 +173,31 @@ for idx in tqdm(range(num_iter)):
 
     # mix first layers too
     for j in range(0, 7):
-        _alpha = np.linspace(1.0, 0.8, 7, endpoint=True)[j]
+        _alpha = np.linspace(1.0, 0.9, 7, endpoint=True)[j]
         in_latent[:, [j]] = _alpha*latents[:, [j]] + (1-_alpha)*mean_w[:, [j]]
 
     for c, j in enumerate(id_swap):
-        _alpha = np.linspace(0.05, 0.0, len(id_swap), endpoint=True)[c]
+        _alpha = np.linspace(0.1, 0.0, len(id_swap), endpoint=True)[c]
         in_latent[:, [j]] = _alpha*latents[:, [j]] + (1-_alpha)*mean_w[:, [j]]
-
-    #на первых итерациях дополнительный коэффициент для понижения
-    _i = 60
-    _alpha = np.linspace(1.0, 0.0, _i, endpoint=True)[min(idx,_i)]
-    in_latent = _alpha*latents + (1-_alpha)*in_latent
 
     # оригинальная логика смешивания       
     #in_latent[:, id_swap] = alpha*latents[:, id_swap] + (1-alpha)*mean_w[:, id_swap]
 
+    #на первых итерациях дополнительный коэффициент для понижения
+    _i = 50 #200
+    _alpha = np.linspace(1.0, 0.0, _i, endpoint=True)[min(idx,_i-1)]
+    in_latent = _alpha*latents + (1-_alpha)*in_latent
+
+    # todo: брать семплы последовательно 
     # get only N random samples
-    n = 20
+    n = 4
     if in_latent.size(0) > n:
-        perm = torch.randperm(in_latent.size(0))
+        perm = []
+        for j in range(0, n):
+            perm.append(_c % latents.shape[0])
+            _c = _c + 1
+        #perm = torch.randperm(in_latent.size(0))
+
         _idx = perm[:n]
         _in_latent = in_latent[_idx]
         _targets = targets[_idx]
@@ -196,13 +221,26 @@ for idx in tqdm(range(num_iter)):
             loss = loss + lpips_fn(img1,img2).mean()
     '''
 
-    lpips_size = 256 #256
-    loss = loss + lpips_fn(F.interpolate(img, size=(lpips_size,lpips_size), mode='bilinear'), F.interpolate(_targets, size=(lpips_size,lpips_size), mode='bilinear')).mean()
+    lpips_size = 512 #256
+    img1 = F.interpolate(img, size=(lpips_size,lpips_size), mode='bilinear')
+    img2 = F.interpolate(_targets, size=(lpips_size,lpips_size), mode='bilinear')
+    loss = loss + lpips_fn(img1, img2).mean()
 
-    lpips_size = 64 #256
-    loss = loss + lpips_fn(F.interpolate(img, size=(lpips_size,lpips_size), mode='bilinear'), F.interpolate(_targets, size=(lpips_size,lpips_size), mode='bilinear')).mean()
+    img1 = F.interpolate(img, size=(256,256), mode='bilinear')
+    img2 = F.interpolate(_targets, size=(256,256), mode='bilinear')
+    loss = loss + 0.01 * caluclate_contentloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
+    loss = loss - 0.01 * caluclate_styleloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
 
-    
+    for g in g_optim.param_groups:
+        if idx < 80:
+            g['lr'] = 0.003
+        else:
+            g['lr'] = 0.001
+
+    g_optim.zero_grad()
+    loss.backward()
+    g_optim.step()
+
     if idx % log_interval == 0:
         generator.eval()
         my_sample = generator(my_w, input_is_latent=True)
@@ -211,9 +249,10 @@ for idx in tqdm(range(num_iter)):
         my_sample.save(f'my_sample_{idx}.png')
 
 
-    g_optim.zero_grad()
-    loss.backward()
-    g_optim.step()
+
+
+
+
 
 
 #@title Generate results
