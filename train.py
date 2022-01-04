@@ -190,7 +190,7 @@ for idx in tqdm(range(num_iter)):
 
     # todo: брать семплы последовательно 
     # get only N random samples
-    n = 4
+    n = 2
     if in_latent.size(0) > n:
         perm = []
         for j in range(0, n):
@@ -213,12 +213,6 @@ for idx in tqdm(range(num_iter)):
     #loss = loss + lpips_fn(F.interpolate(img, size=(lpips_size,lpips_size), mode='area'), F.interpolate(_targets, size=(lpips_size,lpips_size), mode='area')).mean()
     
     '''
-    lpips_size = 128 #256
-    for x in range(0,1024,256):
-        for y in range(0,1024,256):
-            img1 = F.interpolate(torchvision.transforms.functional.crop(img,x,y,512,512), size=(lpips_size,lpips_size), mode='area')
-            img2 = F.interpolate(torchvision.transforms.functional.crop(_targets,x,y,512,512), size=(lpips_size,lpips_size), mode='area')
-            loss = loss + lpips_fn(img1,img2).mean()
     '''
 
     lpips_size = 512 #256
@@ -226,10 +220,13 @@ for idx in tqdm(range(num_iter)):
     img2 = F.interpolate(_targets, size=(lpips_size,lpips_size), mode='bilinear')
     loss = loss + lpips_fn(img1, img2).mean()
 
-    img1 = F.interpolate(img, size=(256,256), mode='bilinear')
-    img2 = F.interpolate(_targets, size=(256,256), mode='bilinear')
-    loss = loss + 0.01 * caluclate_contentloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
-    loss = loss - 0.01 * caluclate_styleloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
+    lpips_size = 256 
+    for x in range(0,1024,256):
+        for y in range(0,1024,256):
+            img1 = F.interpolate(torchvision.transforms.functional.crop(img,x,y,lpips_size,lpips_size), size=(lpips_size,lpips_size), mode='area')
+            img2 = F.interpolate(torchvision.transforms.functional.crop(_targets,x,y,lpips_size,lpips_size), size=(lpips_size,lpips_size), mode='area')
+            loss = loss + 0.01 * caluclate_contentloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
+            loss = loss - 0.01 * caluclate_styleloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
 
     for g in g_optim.param_groups:
         if idx < 80:
@@ -249,10 +246,16 @@ for idx in tqdm(range(num_iter)):
         my_sample.save(f'my_sample_{idx}.png')
 
 
-
-
-
-
+if not os.path.exists("checkpoints"):
+        os.mkdir("checkpoints")
+    
+torch.save(
+    {
+        "g_ema": generator.state_dict(),
+        "g_optim": g_optim.state_dict(),
+    },
+    f"checkpoints/checkpoint.pt",
+)
 
 
 #@title Generate results
