@@ -73,9 +73,11 @@ else:
 #path_to_dataset = 'dataset/mexican'
 #path_to_dataset = 'dataset/bust'
 
-path_to_dataset = 'dataset/rough pencil sketch portrait'
-is_aligned = False
-#is_aligned = True
+path_to_dataset = '/mnt/disks/sbd1/datasets/Granovsky_dataset/13_puppet'
+#path_to_dataset = 'dataset/tuneme'
+#is_aligned = False
+is_aligned = True
+need_to_save_projected = False
 
 names = []
 for path in sorted(glob.glob(os.path.join(path_to_dataset, '*.*'))):
@@ -121,9 +123,11 @@ for name in names:
         my_sample = generator(latent.unsqueeze(0), input_is_latent=True)
         generator.train()
         my_sample = transforms.ToPILImage()(utils.make_grid(my_sample, normalize=True, range=(-1, 1)))
-        my_sample.save(os.path.join(path_to_inv, f'{name}.jpg'))
-
-        style_aligned.save(os.path.join(path_to_inv, f'{name}_orig.jpg'))
+        
+        if need_to_save_projected:
+            my_sample.save(os.path.join(path_to_inv, f'{name}.jpg'))
+            style_aligned.save(os.path.join(path_to_inv, f'{name}_orig.jpg'))
+        
     else:
         latent = torch.load(style_code_path)['latent']
 
@@ -155,7 +159,7 @@ lpips_fn = lpips.LPIPS(net='vgg').to(device)
 del generator
 generator = deepcopy(original_generator)
 
-g_optim = optim.Adam(generator.parameters(), lr=2e-3, betas=(0, 0.99))
+g_optim = optim.Adam(generator.parameters(), lr=2e-4, betas=(0, 0.99))
 
 # Which layers to swap for generating a family of plausible real images -> fake image
 if preserve_color:
@@ -168,52 +172,62 @@ repeat = 1
 targets = targets.repeat(repeat,1,1,1) 
 latents = latents.repeat(repeat,1,1) 
 
+passed_all_dataset = 0
+
 for idx in tqdm(range(num_iter)):
     if preserve_color:
         random_alpha = 0
     else:
         random_alpha = np.random.uniform(alpha, 1)
-        
-    mean_w = generator.get_latent(torch.randn([latents.size(0), generator.n_latent, latent_dim]).to(device))
-    #mean_w = generator.get_latent(torch.randn([latents.size(0), latent_dim]).to(device)).unsqueeze(1).repeat(1, generator.n_latent, 1)
-    in_latent = latents.clone()
-
-    # mix first layers too
-    for j in range(0, 7):
-        _alpha = np.linspace(1.0, 0.9, 7, endpoint=True)[j]
-        in_latent[:, [j]] = _alpha*latents[:, [j]] + (1-_alpha)*mean_w[:, [j]]
-
-    for c, j in enumerate(id_swap):
-        _alpha = np.linspace(0.1, 0.0, len(id_swap), endpoint=True)[c]
-        in_latent[:, [j]] = _alpha*latents[:, [j]] + (1-_alpha)*mean_w[:, [j]]
-
-
-    in_latent[:, [15,16,17]] = latents[:, [15,16,17]] 
-
-    # оригинальная логика смешивания       
-    #in_latent[:, id_swap] = alpha*latents[:, id_swap] + (1-alpha)*mean_w[:, id_swap]
-
-    #на первых итерациях дополнительный коэффициент для понижения
-    _i = 50 #200
-    _alpha = np.linspace(1.0, 0.0, _i, endpoint=True)[min(idx,_i-1)]
-    in_latent = _alpha*latents + (1-_alpha)*in_latent
 
     # todo: брать семплы последовательно 
     # get only N random samples
     n = 5
-    if in_latent.size(0) > n:
+    _idx = []
+    _in_latent = []
+    _targets = []
+    if latents.size(0) > n:
         perm = []
         for j in range(0, n):
             perm.append(_c % latents.shape[0])
             _c = _c + 1
+            if _c >= latents.shape[0]:
+                passed_all_dataset += 1
+                _c = 0
+
         #perm = torch.randperm(in_latent.size(0))
 
         _idx = perm[:n]
-        _in_latent = in_latent[_idx]
-        _targets = targets[_idx]
+        _in_latent = latents[_idx].clone()
+        _targets = targets[_idx].clone()
     else:
-        _in_latent = in_latent
-        _targets = targets
+        _in_latent = latents.clone()
+        _targets = targets.clone()
+        n = min(n,latents.size(0))
+     
+    if passed_all_dataset > 0:
+        mean_w = generator.get_latent(torch.randn([n, generator.n_latent, latent_dim]).to(device))
+        #mean_w = generator.get_latent(torch.randn([latents.size(0), latent_dim]).to(device)).unsqueeze(1).repeat(1, generator.n_latent, 1)
+        
+        # mix first layers too
+        for j in range(0, 7):
+            _alpha = np.linspace(1.0, 0.9, 7, endpoint=True)[j]
+            _in_latent[:, [j]] = _alpha*latents[_idx][:, [j]] + (1-_alpha)*mean_w[:, [j]]
+
+        for c, j in enumerate(id_swap):
+            _alpha = np.linspace(0.1, 0.0, len(id_swap), endpoint=True)[c]
+            _in_latent[:, [j]] = _alpha*latents[_idx][:, [j]] + (1-_alpha)*mean_w[:, [j]]
+
+
+        #_in_latent[:, [15,16,17]] = latents[_idx][:, [15,16,17]] 
+
+        # оригинальная логика смешивания       
+        #in_latent[:, id_swap] = alpha*latents[:, id_swap] + (1-alpha)*mean_w[:, id_swap]
+
+        #на первых итерациях дополнительный коэффициент для понижения
+        _i = 50 #200
+        _alpha = np.linspace(1.0, 0.0, _i, endpoint=True)[min(idx,_i-1)]
+        _in_latent = _alpha*latents[_idx] + (1-_alpha)*_in_latent
 
     img = generator(_in_latent, input_is_latent=True)
     
@@ -230,6 +244,7 @@ for idx in tqdm(range(num_iter)):
     img2 = F.interpolate(_targets, size=(lpips_size,lpips_size), mode='bilinear')
     loss = loss + lpips_fn(img1, img2).mean()
 
+    '''
     lpips_size = 256 
     for x in range(0,1024,256):
         for y in range(0,1024,256):
@@ -237,6 +252,7 @@ for idx in tqdm(range(num_iter)):
             img2 = F.interpolate(torchvision.transforms.functional.crop(_targets,x,y,lpips_size,lpips_size), size=(lpips_size,lpips_size), mode='area')
             loss = loss + 0.08 * caluclate_contentloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
             loss = loss - 0.08 * caluclate_styleloss((img1 + 1.0) / 2.0, (img2 + 1.0) / 2.0).mean()
+    '''
 
     for g in g_optim.param_groups:
         if idx < 80:
